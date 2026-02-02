@@ -13,7 +13,10 @@ from datetime import datetime, timezone
 
 import yaml
 
-from scout.infra import query_pipelines, query_transmission_lines, query_fiber, query_substations
+from scout.infra import (
+    query_pipelines, query_transmission_lines, query_fiber,
+    query_substations, query_city_limits_distance,
+)
 from scout.regulatory import check_city_limits, check_attainment
 from scout.formatter import format_markdown, format_json
 
@@ -65,6 +68,7 @@ def main():
         "substations": [],
         "fiber": {},
         "city_limits": {},
+        "nearby_cities": [],
         "attainment": {},
     }
 
@@ -89,6 +93,9 @@ def main():
 
         print("🏙️ Checking city limits...", file=sys.stderr)
         results["city_limits"] = check_city_limits(args.lat, args.lon)
+
+        print("📏 Querying city limit distances...", file=sys.stderr)
+        results["nearby_cities"] = query_city_limits_distance(args.lat, args.lon, radius_km)
 
         print("🌿 Checking EPA attainment...", file=sys.stderr)
         results["attainment"] = check_attainment(args.lat, args.lon)

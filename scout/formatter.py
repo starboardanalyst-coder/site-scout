@@ -21,8 +21,8 @@ def format_markdown(results: Dict[str, Any]) -> str:
     except Exception:
         time_str = ts
 
-    lines: List[str] = []
-    a = lines.append
+    out: List[str] = []
+    a = out.append
 
     a(f"📍 Site Scout Report — ({lat:.4f}, {lon:.4f})")
     a(f"Generated: {time_str}")
@@ -55,9 +55,9 @@ def format_markdown(results: Dict[str, Any]) -> str:
     a(f"═══ 🟡 TRANSMISSION LINES ({radius}km radius) ═══")
     a("")
 
-    lines_data = results.get("transmission_lines", [])
-    if lines_data:
-        for i, t in enumerate(lines_data[:10], 1):
+    tx_lines = results.get("transmission_lines", [])
+    if tx_lines:
+        for i, t in enumerate(tx_lines[:10], 1):
             owner = t.get("owner", "Unknown")
             v = t.get("voltage_kv", "?")
             a(f"  #{i}  {owner} — {v} kV")
@@ -73,26 +73,31 @@ def format_markdown(results: Dict[str, Any]) -> str:
         a("  ❌ No transmission lines found within radius")
         a("")
 
-    # ---- Substations / Power Plants ----
-    a(f"═══ 🏭 SUBSTATIONS / POWER PLANTS ({radius}km radius) ═══")
+    # ---- Substations ----
+    a(f"═══ 🏭 SUBSTATIONS ({radius}km radius) ═══")
     a("")
     subs = results.get("substations", [])
     if subs:
-        for i, s in enumerate(subs[:10], 1):
+        for i, s in enumerate(subs[:15], 1):
             name = s.get("name", "Unknown")
-            mw = s.get("capacity_mw", "?")
-            src = s.get("primary_source", "?")
-            a(f"  #{i}  {name} — {mw} MW ({src})")
+            stype = s.get("type", "?")
+            status = s.get("status", "?")
+            lines = s.get("lines", 0)
+            city = s.get("city", "")
+            status_icon = "✅" if status == "IN SERVICE" else ("🔨" if "CONSTRUCTION" in (status or "").upper() else "⚪")
+            a(f"  #{i}  {name} ({stype}) — {status_icon} {status} | Lines: {lines}")
             a(f"      Distance: {s['distance_km']} km ({s['distance_mi']} mi) — Direction: {s.get('direction', '?')}")
+            if city:
+                a(f"      City: {city}, {s.get('state', '')}")
             slat = s.get("lat")
             slon = s.get("lon")
             if slat and slon:
                 a(f"      📍 ({slat}, {slon})")
                 a(f"      🗺️ {s.get('google_maps_link', '')}")
-            a(f"      📊 Source: {s.get('data_source', 'EIA')}")
+            a(f"      📊 Source: {s.get('data_source', 'HIFLD')}")
             a("")
     else:
-        a("  ❌ No power plants found within radius")
+        a("  ❌ No substations found within radius")
         a("")
 
     # ---- Fiber ----
@@ -147,6 +152,31 @@ def format_markdown(results: Dict[str, Any]) -> str:
         a(f"  ⚠️ {cl['error']}")
     a("")
 
+    # ---- Nearby Cities (boundary distance) ----
+    nearby = results.get("nearby_cities", [])
+    if nearby:
+        a(f"  📏 Distance to Nearest City Boundaries:")
+        a("")
+        for i, c in enumerate(nearby[:8], 1):
+            name = c.get("name", "?")
+            ctype = c.get("type", "")
+            inside = c.get("inside", False)
+            bd = c.get("distance_to_boundary_km", "?")
+            bd_mi = c.get("distance_to_boundary_mi", "?")
+            cd = c.get("distance_to_center_km", "?")
+
+            if inside:
+                a(f"  #{i}  {name} — ✅ INSIDE (boundary {bd} km / {bd_mi} mi away)")
+            else:
+                a(f"  #{i}  {name} — {bd} km ({bd_mi} mi) to boundary | {cd} km to center")
+            blat = c.get("nearest_boundary_lat")
+            blon = c.get("nearest_boundary_lon")
+            if blat and blon:
+                a(f"      📍 Nearest edge: ({blat}, {blon})")
+                a(f"      🗺️ {c.get('google_maps_link', '')}")
+            a(f"      📊 Source: {c.get('data_source', 'Census TIGERweb')}")
+            a("")
+
     # ---- EPA ----
     a("═══ 🌿 EPA ATTAINMENT ═══")
     a("")
@@ -165,7 +195,7 @@ def format_markdown(results: Dict[str, Any]) -> str:
     if att.get("error"):
         a(f"  ⚠️ {att['error']}")
 
-    return "\n".join(lines)
+    return "\n".join(out)
 
 
 def format_json(results: Dict[str, Any]) -> str:

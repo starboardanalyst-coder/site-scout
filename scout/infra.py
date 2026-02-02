@@ -1,10 +1,12 @@
 """
-Infrastructure queries for pipelines, substations/transmission lines, and fiber.
+Infrastructure queries for pipelines, substations, transmission lines, fiber, and city limits.
 
 Data sources:
   - Pipelines: EIA Natural Gas Interstate and Intrastate Pipelines (ArcGIS)
   - Transmission: HIFLD Electric Power Transmission Lines (ArcGIS)
-  - Fiber: FCC Broadband Map (manual link; API endpoint unstable)
+  - Substations: HIFLD Electric Substations (ArcGIS, Jan 2025 update)
+  - Fiber: FCC BDC Dec 2024 via ArcGIS (census block level)
+  - City Limits: Census TIGERweb Incorporated Places (polygon boundaries)
 """
 
 import requests
@@ -391,16 +393,21 @@ def query_fiber(lat: float, lon: float) -> Dict[str, Any]:
 # Substations — EIA Power Plants (as proxy for grid access)
 # ============================================================
 
-POWER_PLANTS_URL = (
-    "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
-    "Power_Plants_in_the_US/FeatureServer/0/query"
+SUBSTATIONS_URL = (
+    "https://services6.arcgis.com/OO2s4OoyCZkYJ6oE/arcgis/rest/services/"
+    "Substations/FeatureServer/0/query"
+)
+
+CITY_LIMITS_URL = (
+    "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/"
+    "Places_CouSub_ConCity_SubMCD/MapServer/4/query"
 )
 
 
 def query_substations(lat: float, lon: float, radius_km: float) -> List[Dict[str, Any]]:
     """
-    Query EIA power plants as a proxy for grid access points / substations.
-    HIFLD substation endpoint was retired. Power plants indicate grid infrastructure.
+    Query HIFLD Electric Substations (Jan 2025 update).
+    Returns real substations with type, status, and connected line count.
     """
     geometry = json.dumps({
         "x": lon, "y": lat,
@@ -415,14 +422,14 @@ def query_substations(lat: float, lon: float, radius_km: float) -> List[Dict[str
         "distance": radius_km,
         "units": "esriSRUnit_Kilometer",
         "where": "1=1",
-        "outFields": "Plant_Name,State,County,Total_MW,Install_MW,PrimSource,Latitude,Longitude",
+        "outFields": "NAME,CITY,STATE,TYPE,STATUS,COUNTY,LATITUDE,LONGITUDE,LINES",
         "returnGeometry": "true",
         "outSR": "4326",
-        "resultRecordCount": 20,
+        "resultRecordCount": 30,
     }
 
     try:
-        resp = requests.get(POWER_PLANTS_URL, params=params, timeout=30)
+        resp = requests.get(SUBSTATIONS_URL, params=params, timeout=30)
         resp.raise_for_status()
         data = resp.json()
 
@@ -432,30 +439,115 @@ def query_substations(lat: float, lon: float, radius_km: float) -> List[Dict[str
         results = []
         for feat in data.get("features", []):
             attrs = feat["attributes"]
-            geom = feat.get("geometry", {})
-            slat = geom.get("y") or attrs.get("Latitude")
-            slon = geom.get("x") or attrs.get("Longitude")
+            slat = attrs.get("LATITUDE")
+            slon = attrs.get("LONGITUDE")
+            if not slat or not slon:
+                geom = feat.get("geometry", {})
+                slat = geom.get("y")
+                slon = geom.get("x")
             if not slat or not slon:
                 continue
 
             dist = haversine_distance(lat, lon, slat, slon)
+            name = attrs.get("NAME", "Unknown")
             results.append({
-                "name": attrs.get("Plant_Name", "Unknown"),
-                "capacity_mw": attrs.get("Total_MW") or attrs.get("Install_MW") or 0,
-                "primary_source": attrs.get("PrimSource", "Unknown"),
-                "county": attrs.get("County", ""),
+                "name": name,
+                "type": attrs.get("TYPE", "Unknown"),
+                "status": attrs.get("STATUS", "Unknown"),
+                "lines": attrs.get("LINES", 0) or 0,
+                "city": attrs.get("CITY", ""),
+                "county": attrs.get("COUNTY", ""),
+                "state": attrs.get("STATE", ""),
                 "distance_km": round(dist, 1),
                 "distance_mi": round(km_to_miles(dist), 1),
                 "lat": round(slat, 6),
                 "lon": round(slon, 6),
                 "direction": compass_direction(lat, lon, slat, slon),
                 "google_maps_link": _google_maps_link(slat, slon),
-                "data_source": "EIA Power Plants (ArcGIS FeatureServer)",
+                "data_source": "HIFLD Electric Substations (ArcGIS, Jan 2025)",
             })
 
         results.sort(key=lambda x: x["distance_km"])
         return results
 
     except Exception as e:
-        print(f"Warning: Substations/power plants query failed: {e}")
+        print(f"Warning: Substations query failed: {e}")
+        return []
+
+
+def query_city_limits_distance(lat: float, lon: float, radius_km: float = 50) -> List[Dict[str, Any]]:
+    """
+    Query Census TIGERweb for nearby incorporated places (cities/towns).
+    Uses Shapely to compute distance to the actual city boundary polygon,
+    not just the centroid.
+    """
+    from shapely.geometry import Point, Polygon
+    from shapely.ops import nearest_points
+
+    geometry = json.dumps({
+        "x": lon, "y": lat,
+        "spatialReference": {"wkid": 4326}
+    })
+
+    params = {
+        "f": "json",
+        "geometry": geometry,
+        "geometryType": "esriGeometryPoint",
+        "spatialRel": "esriSpatialRelIntersects",
+        "distance": radius_km,
+        "units": "esriSRUnit_Kilometer",
+        "outFields": "NAME,BASENAME,LSADC,FUNCSTAT,CENTLAT,CENTLON",
+        "returnGeometry": "true",
+        "outSR": "4326",
+    }
+
+    try:
+        resp = requests.get(CITY_LIMITS_URL, params=params, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("error"):
+            return []
+
+        query_pt = Point(lon, lat)
+        results = []
+
+        for feat in data.get("features", []):
+            attrs = feat["attributes"]
+            rings = feat.get("geometry", {}).get("rings", [])
+            if not rings:
+                continue
+
+            try:
+                poly = Polygon(rings[0], rings[1:] if len(rings) > 1 else [])
+                inside = poly.contains(query_pt)
+
+                # Distance to nearest boundary edge
+                np_on_edge = nearest_points(query_pt, poly.exterior)[1]
+                edge_dist = haversine_distance(lat, lon, np_on_edge.y, np_on_edge.x)
+
+                centlat = float(str(attrs.get("CENTLAT", "0")).replace("+", ""))
+                centlon = float(str(attrs.get("CENTLON", "0")).replace("+", ""))
+                center_dist = haversine_distance(lat, lon, centlat, centlon)
+
+                results.append({
+                    "name": attrs.get("NAME", "Unknown"),
+                    "type": attrs.get("LSADC", ""),
+                    "inside": inside,
+                    "distance_to_boundary_km": round(edge_dist, 1),
+                    "distance_to_boundary_mi": round(km_to_miles(edge_dist), 1),
+                    "distance_to_center_km": round(center_dist, 1),
+                    "nearest_boundary_lat": round(np_on_edge.y, 6),
+                    "nearest_boundary_lon": round(np_on_edge.x, 6),
+                    "google_maps_link": _google_maps_link(np_on_edge.y, np_on_edge.x),
+                    "data_source": "US Census TIGERweb Incorporated Places",
+                })
+            except Exception:
+                continue
+
+        results.sort(key=lambda x: x["distance_to_boundary_km"])
+        return results
+
+    except Exception as e:
+        print(f"Warning: City limits query failed: {e}")
         return []
