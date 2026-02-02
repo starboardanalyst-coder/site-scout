@@ -1,0 +1,28 @@
+# Site Scout Dependencies
+
+# HTTP requests for API calls
+requests>=2.31.0
+
+# Geospatial operations
+shapely>=2.0.0
+
+# Geographic calculations and utilities  
+geopy>=2.4.0
+
+# YAML configuration file support
+pyyaml>=6.0.0
+
+# JSON handling (built-in, but ensuring compatibility)
+# json - built-in module
+
+# Math operations (built-in)
+# math - built-in module
+
+# Operating system interface (built-in)
+# os - built-in module
+
+# Date and time handling (built-in)
+# datetime - built-in module
+
+# Type hints (built-in in Python 3.5+)
+# typing - built-in module

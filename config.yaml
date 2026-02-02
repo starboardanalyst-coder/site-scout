@@ -1,0 +1,54 @@
+# Site Scout Configuration
+
+# Default search radius in kilometers
+default_radius_km: 15
+
+# Target region
+region: "Texas"
+
+# Pipeline configuration
+pipelines:
+  operators: 
+    - "Kinder Morgan"
+    - "Targa"
+  # API configuration
+  api:
+    timeout_seconds: 30
+    max_results: 50
+
+# Substation configuration  
+substations:
+  min_voltage_kv: 69
+  state_filter: "TX"
+  # API configuration
+  api:
+    timeout_seconds: 30
+    max_results: 50
+
+# Fiber/broadband configuration
+fiber:
+  api:
+    timeout_seconds: 30
+
+# Regulatory checks
+regulatory:
+  city_limits:
+    api:
+      timeout_seconds: 30
+  epa_attainment:
+    cache_duration_days: 30
+    api:
+      timeout_seconds: 30
+
+# Output formatting
+output:
+  max_pipeline_results: 10
+  max_substation_results: 10
+  max_provider_display: 5
+  
+# Cache settings
+cache:
+  enabled: true
+  directory: "cache"
+  infrastructure_ttl_hours: 168  # 1 week
+  regulatory_ttl_hours: 720      # 30 days
