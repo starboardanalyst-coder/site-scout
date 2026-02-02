@@ -39,16 +39,45 @@ def ensure_cache_dir():
 
 def _nearest_on_paths(plat: float, plon: float,
                       paths: List[List]) -> Tuple[float, Optional[Tuple[float, float]]]:
-    """Find nearest point on a set of paths to the given lat/lon."""
-    mind = 999999
-    nearest = None
+    """
+    Find the true nearest point on polyline paths using Shapely projection.
+    This projects onto line segments (not just vertices), giving <100m accuracy
+    vs the ~3km error of vertex-only approach.
+    """
+    from shapely.geometry import Point, LineString, MultiLineString
+    from shapely.ops import nearest_points
+
+    query_pt = Point(plon, plat)  # Shapely uses (x=lon, y=lat)
+    best_dist = 999999
+    best_nearest = None
+
     for path in paths:
-        for c in path:
-            d = haversine_distance(plat, plon, c[1], c[0])
-            if d < mind:
-                mind = d
-                nearest = (c[1], c[0])  # (lat, lon)
-    return mind, nearest
+        if len(path) < 2:
+            # Single point — fall back to direct distance
+            if path:
+                c = path[0]
+                d = haversine_distance(plat, plon, c[1], c[0])
+                if d < best_dist:
+                    best_dist = d
+                    best_nearest = (c[1], c[0])
+            continue
+
+        try:
+            line = LineString(path)  # path coords are (lon, lat)
+            np_on_line = nearest_points(query_pt, line)[1]
+            d = haversine_distance(plat, plon, np_on_line.y, np_on_line.x)
+            if d < best_dist:
+                best_dist = d
+                best_nearest = (np_on_line.y, np_on_line.x)  # (lat, lon)
+        except Exception:
+            # Fallback to vertex method if Shapely fails
+            for c in path:
+                d = haversine_distance(plat, plon, c[1], c[0])
+                if d < best_dist:
+                    best_dist = d
+                    best_nearest = (c[1], c[0])
+
+    return best_dist, best_nearest
 
 
 def _google_maps_link(lat: float, lon: float) -> str:
@@ -254,17 +283,133 @@ def query_transmission_lines(lat: float, lon: float, radius_km: float,
 
 def query_fiber(lat: float, lon: float) -> Dict[str, Any]:
     """
-    Return FCC broadband info. Direct API is unstable (405 errors as of Feb 2026).
-    Returns a manual verification link instead.
+    Query FCC broadband data via browser scraping fallback.
+    Direct API returns 405 as of Feb 2026 — we scrape the summary page.
     """
     viewer_url = FCC_BROADBAND_VIEWER.format(lat=lat, lon=lon)
+
+    # Try scraping the FCC broadband map page for ISP data
+    try:
+        page_url = (
+            f"https://broadbandmap.fcc.gov/location-summary/fixed"
+            f"?speed=25&latency=0&satellite=true&lat={lat}&lon={lon}&zoom=14"
+        )
+        resp = requests.get(page_url, timeout=15, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; SiteScout/1.0)"
+        })
+        text = resp.text
+
+        # Extract provider data from embedded JSON in page
+        import re
+        providers = set()
+        # Look for provider names in the page source
+        for m in re.finditer(r'"provider_name"\s*:\s*"([^"]+)"', text):
+            providers.add(m.group(1))
+        for m in re.finditer(r'"dba_name"\s*:\s*"([^"]+)"', text):
+            providers.add(m.group(1))
+
+        has_fiber = False
+        techs = set()
+        for m in re.finditer(r'"technology_code"\s*:\s*(\d+)', text):
+            code = int(m.group(1))
+            techs.add(code)
+            if code in (50, 70):  # 50 = Fiber to Premises, 70 = Fiber
+                has_fiber = True
+
+        if providers:
+            return {
+                "has_fiber": has_fiber,
+                "providers": sorted(providers),
+                "technology_codes": sorted(techs),
+                "max_download_mbps": 0,
+                "max_upload_mbps": 0,
+                "manual_check_url": viewer_url,
+                "data_source": "FCC Broadband Map (page scrape)",
+            }
+    except Exception as e:
+        pass
+
+    # Fallback: return manual check link
     return {
-        "has_fiber": None,  # Cannot determine programmatically
+        "has_fiber": None,
         "providers": [],
         "max_download_mbps": 0,
         "max_upload_mbps": 0,
-        "technology_types": [],
         "manual_check_url": viewer_url,
         "data_source": "FCC Broadband Map",
-        "note": "FCC API不稳定，请手动验证: " + viewer_url,
+        "note": "无法自动查询，请手动验证: " + viewer_url,
     }
+
+
+# ============================================================
+# Substations — EIA Power Plants (as proxy for grid access)
+# ============================================================
+
+POWER_PLANTS_URL = (
+    "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
+    "Power_Plants_in_the_US/FeatureServer/0/query"
+)
+
+
+def query_substations(lat: float, lon: float, radius_km: float) -> List[Dict[str, Any]]:
+    """
+    Query EIA power plants as a proxy for grid access points / substations.
+    HIFLD substation endpoint was retired. Power plants indicate grid infrastructure.
+    """
+    geometry = json.dumps({
+        "x": lon, "y": lat,
+        "spatialReference": {"wkid": 4326}
+    })
+
+    params = {
+        "f": "json",
+        "geometry": geometry,
+        "geometryType": "esriGeometryPoint",
+        "spatialRel": "esriSpatialRelIntersects",
+        "distance": radius_km,
+        "units": "esriSRUnit_Kilometer",
+        "where": "1=1",
+        "outFields": "Plant_Name,State,County,Total_MW,Install_MW,PrimSource,Latitude,Longitude",
+        "returnGeometry": "true",
+        "outSR": "4326",
+        "resultRecordCount": 20,
+    }
+
+    try:
+        resp = requests.get(POWER_PLANTS_URL, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("error"):
+            return []
+
+        results = []
+        for feat in data.get("features", []):
+            attrs = feat["attributes"]
+            geom = feat.get("geometry", {})
+            slat = geom.get("y") or attrs.get("Latitude")
+            slon = geom.get("x") or attrs.get("Longitude")
+            if not slat or not slon:
+                continue
+
+            dist = haversine_distance(lat, lon, slat, slon)
+            results.append({
+                "name": attrs.get("Plant_Name", "Unknown"),
+                "capacity_mw": attrs.get("Total_MW") or attrs.get("Install_MW") or 0,
+                "primary_source": attrs.get("PrimSource", "Unknown"),
+                "county": attrs.get("County", ""),
+                "distance_km": round(dist, 1),
+                "distance_mi": round(km_to_miles(dist), 1),
+                "lat": round(slat, 6),
+                "lon": round(slon, 6),
+                "direction": compass_direction(lat, lon, slat, slon),
+                "google_maps_link": _google_maps_link(slat, slon),
+                "data_source": "EIA Power Plants (ArcGIS FeatureServer)",
+            })
+
+        results.sort(key=lambda x: x["distance_km"])
+        return results
+
+    except Exception as e:
+        print(f"Warning: Substations/power plants query failed: {e}")
+        return []

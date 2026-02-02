@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 import yaml
 
-from scout.infra import query_pipelines, query_transmission_lines, query_fiber
+from scout.infra import query_pipelines, query_transmission_lines, query_fiber, query_substations
 from scout.regulatory import check_city_limits, check_attainment
 from scout.formatter import format_markdown, format_json
 
@@ -62,6 +62,7 @@ def main():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "pipelines": [],
         "transmission_lines": [],
+        "substations": [],
         "fiber": {},
         "city_limits": {},
         "attainment": {},
@@ -79,6 +80,9 @@ def main():
             args.lat, args.lon, radius_km,
             min_voltage_kv=min_kv,
         )
+
+        print("🏭 Querying substations/power plants...", file=sys.stderr)
+        results["substations"] = query_substations(args.lat, args.lon, radius_km)
 
         print("🌐 Checking fiber...", file=sys.stderr)
         results["fiber"] = query_fiber(args.lat, args.lon)

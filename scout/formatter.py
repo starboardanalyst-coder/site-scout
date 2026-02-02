@@ -73,6 +73,28 @@ def format_markdown(results: Dict[str, Any]) -> str:
         a("  ❌ No transmission lines found within radius")
         a("")
 
+    # ---- Substations / Power Plants ----
+    a(f"═══ 🏭 SUBSTATIONS / POWER PLANTS ({radius}km radius) ═══")
+    a("")
+    subs = results.get("substations", [])
+    if subs:
+        for i, s in enumerate(subs[:10], 1):
+            name = s.get("name", "Unknown")
+            mw = s.get("capacity_mw", "?")
+            src = s.get("primary_source", "?")
+            a(f"  #{i}  {name} — {mw} MW ({src})")
+            a(f"      Distance: {s['distance_km']} km ({s['distance_mi']} mi) — Direction: {s.get('direction', '?')}")
+            slat = s.get("lat")
+            slon = s.get("lon")
+            if slat and slon:
+                a(f"      📍 ({slat}, {slon})")
+                a(f"      🗺️ {s.get('google_maps_link', '')}")
+            a(f"      📊 Source: {s.get('data_source', 'EIA')}")
+            a("")
+    else:
+        a("  ❌ No power plants found within radius")
+        a("")
+
     # ---- Fiber ----
     a("═══ 🔵 FIBER / BROADBAND ═══")
     a("")
