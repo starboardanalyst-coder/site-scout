@@ -100,27 +100,34 @@ def format_markdown(results: Dict[str, Any]) -> str:
     a("")
     fiber = results.get("fiber", {})
     has_fiber = fiber.get("has_fiber")
+
     if has_fiber is True:
         a("  Status: ✅ Fiber Available")
-        provs = fiber.get("providers", [])
-        if provs:
-            a(f"  Providers: {', '.join(provs[:5])}")
-        down = fiber.get("max_download_mbps", 0)
-        up = fiber.get("max_upload_mbps", 0)
-        if down:
-            a(f"  Max Speed: {down}/{up} Mbps")
     elif has_fiber is False:
-        a("  Status: ❌ No Fiber Detected")
+        a("  Status: ❌ No Fiber")
     else:
-        a("  Status: ❓ Unable to query automatically")
+        a("  Status: ❓ Unknown")
 
-    note = fiber.get("note")
-    if note:
-        a(f"  ⚠️ {note}")
+    block = fiber.get("block_data", {})
+    if block:
+        total = block.get("total_locations", 0)
+        served = block.get("served", 0)
+        unserved = block.get("unserved", 0)
+        underserved = block.get("underserved", 0)
+        a(f"  📍 Census Block: {block.get('geoid', '?')}")
+        a(f"  Locations (BSL): {total} total | {served} served | {unserved} unserved | {underserved} underserved")
+        a(f"  Fiber served: {block.get('fiber_served', 0)} | Cable: {block.get('cable_served', 0)} | Fixed Wireless: {block.get('fixed_wireless_served', 0)}")
+        a(f"  Providers: {block.get('unique_providers', 0)} total | {block.get('fiber_providers', 0)} fiber | {block.get('cable_providers', 0)} cable")
+
+    county = fiber.get("county_data", {})
+    if county:
+        a(f"  📊 County overview ({block.get('county', '?')}):")
+        a(f"     {county.get('total_locations', 0)} BSLs | {county.get('served_pct', 0)}% served | {county.get('fiber_served', 0)} fiber | {county.get('fiber_providers', 0)} fiber ISPs")
+
     manual = fiber.get("manual_check_url")
     if manual:
-        a(f"  🔗 Manual verification: {manual}")
-    a(f"  📊 Source: {fiber.get('data_source', 'FCC Broadband Map')}")
+        a(f"  🔗 Verify: {manual}")
+    a(f"  📊 Source: {fiber.get('data_source', 'FCC BDC')}")
     a("")
 
     # ---- City Limits ----

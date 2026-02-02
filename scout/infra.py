@@ -281,64 +281,110 @@ def query_transmission_lines(lat: float, lon: float, radius_km: float,
 # Fiber / Broadband — FCC
 # ============================================================
 
+FCC_BDC_URL = (
+    "https://services8.arcgis.com/peDZJliSvYims39Q/arcgis/rest/services/"
+    "FCC_Broadband_Data_Collection_December_2024_View/FeatureServer"
+)
+
+
 def query_fiber(lat: float, lon: float) -> Dict[str, Any]:
     """
-    Query FCC broadband data via browser scraping fallback.
-    Direct API returns 405 as of Feb 2026 — we scrape the summary page.
+    Query FCC Broadband Data Collection via ArcGIS (census block level).
+    This bypasses the locked-down FCC API by using the public ArcGIS mirror.
+    Data: Dec 2024 BDC, block-level BSL (Broadband Serviceable Location) counts.
     """
     viewer_url = FCC_BROADBAND_VIEWER.format(lat=lat, lon=lon)
+    geometry = json.dumps({
+        "x": lon, "y": lat,
+        "spatialReference": {"wkid": 4326}
+    })
 
-    # Try scraping the FCC broadband map page for ISP data
-    try:
-        page_url = (
-            f"https://broadbandmap.fcc.gov/location-summary/fixed"
-            f"?speed=25&latency=0&satellite=true&lat={lat}&lon={lon}&zoom=14"
-        )
-        resp = requests.get(page_url, timeout=15, headers={
-            "User-Agent": "Mozilla/5.0 (compatible; SiteScout/1.0)"
-        })
-        text = resp.text
-
-        # Extract provider data from embedded JSON in page
-        import re
-        providers = set()
-        # Look for provider names in the page source
-        for m in re.finditer(r'"provider_name"\s*:\s*"([^"]+)"', text):
-            providers.add(m.group(1))
-        for m in re.finditer(r'"dba_name"\s*:\s*"([^"]+)"', text):
-            providers.add(m.group(1))
-
-        has_fiber = False
-        techs = set()
-        for m in re.finditer(r'"technology_code"\s*:\s*(\d+)', text):
-            code = int(m.group(1))
-            techs.add(code)
-            if code in (50, 70):  # 50 = Fiber to Premises, 70 = Fiber
-                has_fiber = True
-
-        if providers:
-            return {
-                "has_fiber": has_fiber,
-                "providers": sorted(providers),
-                "technology_codes": sorted(techs),
-                "max_download_mbps": 0,
-                "max_upload_mbps": 0,
-                "manual_check_url": viewer_url,
-                "data_source": "FCC Broadband Map (page scrape)",
-            }
-    except Exception as e:
-        pass
-
-    # Fallback: return manual check link
-    return {
+    result = {
         "has_fiber": None,
         "providers": [],
-        "max_download_mbps": 0,
-        "max_upload_mbps": 0,
+        "block_data": {},
+        "county_data": {},
         "manual_check_url": viewer_url,
-        "data_source": "FCC Broadband Map",
-        "note": "无法自动查询，请手动验证: " + viewer_url,
+        "data_source": "FCC BDC Dec 2024 (ArcGIS FeatureServer, census block level)",
     }
+
+    # ---- Block-level query (point-in-polygon) ----
+    try:
+        resp = requests.get(f"{FCC_BDC_URL}/4/query", params={
+            "f": "json",
+            "geometry": geometry,
+            "geometryType": "esriGeometryPoint",
+            "spatialRel": "esriSpatialRelIntersects",
+            "outFields": (
+                "GEOID,CountyName,StateName,TotalBSLs,ServedBSLs,"
+                "UnservedBSLs,UnderservedBSLs,"
+                "ServedBSLsFiber,ServedBSLsCable,ServedBSLsCopper,ServedBSLsLTFW,"
+                "UniqueProviders,UniqueProvidersFiber,UniqueProvidersCable"
+            ),
+            "returnGeometry": "false",
+        }, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+
+        for feat in data.get("features", []):
+            a = feat["attributes"]
+            total = a.get("TotalBSLs", 0) or 0
+            served = a.get("ServedBSLs", 0) or 0
+            fiber = a.get("ServedBSLsFiber", 0) or 0
+            cable = a.get("ServedBSLsCable", 0) or 0
+            copper = a.get("ServedBSLsCopper", 0) or 0
+            ltfw = a.get("ServedBSLsLTFW", 0) or 0  # Licensed/Terrestrial Fixed Wireless
+
+            result["has_fiber"] = fiber > 0
+            result["block_data"] = {
+                "geoid": a.get("GEOID"),
+                "county": a.get("CountyName"),
+                "total_locations": total,
+                "served": served,
+                "unserved": a.get("UnservedBSLs", 0) or 0,
+                "underserved": a.get("UnderservedBSLs", 0) or 0,
+                "fiber_served": fiber,
+                "cable_served": cable,
+                "copper_served": copper,
+                "fixed_wireless_served": ltfw,
+                "unique_providers": a.get("UniqueProviders", 0) or 0,
+                "fiber_providers": a.get("UniqueProvidersFiber", 0) or 0,
+                "cable_providers": a.get("UniqueProvidersCable", 0) or 0,
+            }
+    except Exception as e:
+        result["block_error"] = str(e)
+
+    # ---- County-level query for broader context ----
+    county_name = result.get("block_data", {}).get("county")
+    if county_name:
+        try:
+            resp2 = requests.get(f"{FCC_BDC_URL}/1/query", params={
+                "f": "json",
+                "where": f"CountyName='{county_name}' AND StateName='Texas'",
+                "outFields": (
+                    "TotalBSLs,ServedBSLs,ServedBSLsFiber,ServedBSLsCable,"
+                    "UniqueProviders,UniqueProvidersFiber"
+                ),
+                "returnGeometry": "false",
+            }, timeout=15)
+            resp2.raise_for_status()
+            d2 = resp2.json()
+            for feat in d2.get("features", []):
+                a = feat["attributes"]
+                ct = a.get("TotalBSLs", 0) or 0
+                cs = a.get("ServedBSLs", 0) or 0
+                result["county_data"] = {
+                    "total_locations": ct,
+                    "served": cs,
+                    "served_pct": round(cs / ct * 100, 1) if ct else 0,
+                    "fiber_served": a.get("ServedBSLsFiber", 0) or 0,
+                    "unique_providers": a.get("UniqueProviders", 0) or 0,
+                    "fiber_providers": a.get("UniqueProvidersFiber", 0) or 0,
+                }
+        except Exception:
+            pass
+
+    return result
 
 
 # ============================================================
