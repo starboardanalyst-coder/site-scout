@@ -66,8 +66,15 @@ def check_city_limits(lat: float, lon: float) -> Dict[str, Any]:
                 if counties:
                     county = counties[0]
                     result['county'] = county.get('NAME')
+                    result['county_fips'] = f"{county.get('STATE','')}{county.get('COUNTY','')}"
                     if not result['state']:
                         result['state'] = county.get('STATE')
+
+            # Get census tract
+            if 'Census Tracts' in geographies:
+                tracts = geographies['Census Tracts']
+                if tracts:
+                    result['census_tract'] = tracts[0].get('TRACT')
         
         return result
         

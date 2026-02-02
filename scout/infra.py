@@ -1,231 +1,270 @@
 """
-Infrastructure queries for pipelines, substations, and fiber
+Infrastructure queries for pipelines, substations/transmission lines, and fiber.
+
+Data sources:
+  - Pipelines: EIA Natural Gas Interstate and Intrastate Pipelines (ArcGIS)
+  - Transmission: HIFLD Electric Power Transmission Lines (ArcGIS)
+  - Fiber: FCC Broadband Map (manual link; API endpoint unstable)
 """
 
 import requests
 import json
 import os
-from typing import List, Dict, Any
-from .geo_utils import haversine_distance, km_to_miles, compass_direction, create_bbox_from_point
+import math
+from typing import List, Dict, Any, Tuple, Optional
+from .geo_utils import haversine_distance, km_to_miles, compass_direction
 
 
-# Cache directory for infrastructure data
 CACHE_DIR = "cache"
+
+# ---- Verified working API endpoints (Feb 2026) ----
+PIPELINE_URL = (
+    "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
+    "Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0/query"
+)
+TRANSMISSION_URL = (
+    "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/"
+    "Electric_Power_Transmission_Lines/FeatureServer/0/query"
+)
+FCC_BROADBAND_VIEWER = (
+    "https://broadbandmap.fcc.gov/location-summary/fixed"
+    "?speed=25&latency=0&satellite=true&lat={lat}&lon={lon}"
+)
 
 
 def ensure_cache_dir():
-    """Create cache directory if it doesn't exist"""
     if not os.path.exists(CACHE_DIR):
         os.makedirs(CACHE_DIR)
 
 
-def query_pipelines(lat: float, lon: float, radius_km: float) -> List[Dict[str, Any]]:
+def _nearest_on_paths(plat: float, plon: float,
+                      paths: List[List]) -> Tuple[float, Optional[Tuple[float, float]]]:
+    """Find nearest point on a set of paths to the given lat/lon."""
+    mind = 999999
+    nearest = None
+    for path in paths:
+        for c in path:
+            d = haversine_distance(plat, plon, c[1], c[0])
+            if d < mind:
+                mind = d
+                nearest = (c[1], c[0])  # (lat, lon)
+    return mind, nearest
+
+
+def _google_maps_link(lat: float, lon: float) -> str:
+    return f"https://www.google.com/maps?q={lat:.6f},{lon:.6f}"
+
+
+# ============================================================
+# Pipelines — EIA Natural Gas Pipelines
+# ============================================================
+
+def query_pipelines(lat: float, lon: float, radius_km: float,
+                    operators: Optional[List[str]] = None,
+                    include_all: bool = True) -> List[Dict[str, Any]]:
     """
-    Query EIA ArcGIS REST API for natural gas pipelines within radius
-    Returns list of pipeline features with distance calculations
+    Query EIA ArcGIS for natural gas pipelines near a point.
+
+    Args:
+        lat, lon: Coordinates.
+        radius_km: Search radius.
+        operators: Filter to these operators (e.g. ["Kinder Morgan", "Targa"]).
+                   If include_all=True, also returns non-matching pipelines.
+        include_all: If True, return all pipelines + flag target operators.
+
+    Returns:
+        Sorted list of pipeline dicts with distances and verification links.
     """
     ensure_cache_dir()
-    
-    # Create spatial filter - use point buffer for spatial query
-    geometry = {
-        "x": lon,
-        "y": lat,
+    geometry = json.dumps({
+        "x": lon, "y": lat,
         "spatialReference": {"wkid": 4326}
-    }
-    
-    # ArcGIS REST API endpoint for Natural Gas Pipelines
-    url = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Pipelines/FeatureServer/0/query"
-    
+    })
+
     params = {
-        'f': 'json',
-        'geometry': json.dumps(geometry),
-        'geometryType': 'esriGeometryPoint',
-        'inSR': 4326,
-        'spatialRel': 'esriSpatialRelIntersects',
-        'distance': radius_km,
-        'units': 'esriSRUnit_Kilometer',
-        'outFields': '*',
-        'returnGeometry': True,
-        'where': "(OPERATOR LIKE '%Kinder Morgan%' OR OPERATOR LIKE '%Targa%')"
+        "f": "json",
+        "geometry": geometry,
+        "geometryType": "esriGeometryPoint",
+        "spatialRel": "esriSpatialRelIntersects",
+        "distance": radius_km,
+        "units": "esriSRUnit_Kilometer",
+        "outFields": "Operator,TYPEPIPE,Status",
+        "returnGeometry": "true",
+        "outSR": "4326",
+        "resultRecordCount": 100,
     }
-    
+
+    # Optionally filter by operator
+    if operators and not include_all:
+        clauses = [f"Operator LIKE '%{op}%'" for op in operators]
+        params["where"] = " OR ".join(clauses)
+    else:
+        params["where"] = "1=1"
+
     try:
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        
-        pipelines = []
-        
-        if 'features' in data:
-            for feature in data['features']:
-                attrs = feature['attributes']
-                geom = feature['geometry']
-                
-                # Calculate distance to nearest point on pipeline
-                # For simplicity, we'll use the first coordinate pair
-                if geom and 'paths' in geom and geom['paths']:
-                    pipeline_coords = geom['paths'][0]
-                    if pipeline_coords:
-                        # Find closest point (simplified - just use first point)
-                        pipe_lon, pipe_lat = pipeline_coords[0]
-                        distance_km = haversine_distance(lat, lon, pipe_lat, pipe_lon)
-                        direction = compass_direction(lat, lon, pipe_lat, pipe_lon)
-                        
-                        pipeline = {
-                            'name': attrs.get('PROJ_NAME', 'Unknown Pipeline'),
-                            'operator': attrs.get('OPERATOR', 'Unknown Operator'),
-                            'type': attrs.get('TYPE', 'Unknown Type'),
-                            'distance_km': round(distance_km, 1),
-                            'distance_mi': round(km_to_miles(distance_km), 1),
-                            'nearest_point_lat': pipe_lat,
-                            'nearest_point_lon': pipe_lon,
-                            'direction': direction
-                        }
-                        pipelines.append(pipeline)
-        
-        # Sort by distance and return
-        pipelines.sort(key=lambda x: x['distance_km'])
-        return pipelines
-        
+        resp = requests.get(PIPELINE_URL, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("error"):
+            print(f"Warning: Pipeline API error: {data['error'].get('message')}")
+            return []
+
+        results = []
+        seen = set()
+        target_ops = [o.lower() for o in (operators or [])]
+
+        for feat in data.get("features", []):
+            attrs = feat["attributes"]
+            geom = feat.get("geometry", {})
+            paths = geom.get("paths", [])
+            if not paths:
+                continue
+
+            dist, nearest = _nearest_on_paths(lat, lon, paths)
+            if nearest is None:
+                continue
+
+            operator = attrs.get("Operator", "Unknown")
+            dedup_key = f"{operator}_{round(dist, 0)}"
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+            is_target = any(t in operator.lower() for t in target_ops) if target_ops else False
+            nlat, nlon = nearest
+
+            results.append({
+                "operator": operator,
+                "type": attrs.get("TYPEPIPE", "Unknown"),
+                "status": attrs.get("Status", "Unknown"),
+                "distance_km": round(dist, 1),
+                "distance_mi": round(km_to_miles(dist), 1),
+                "nearest_point_lat": round(nlat, 6),
+                "nearest_point_lon": round(nlon, 6),
+                "direction": compass_direction(lat, lon, nlat, nlon),
+                "is_target_operator": is_target,
+                "google_maps_link": _google_maps_link(nlat, nlon),
+                "data_source": "EIA Natural Gas Interstate & Intrastate Pipelines (ArcGIS FeatureServer)",
+            })
+
+        results.sort(key=lambda x: x["distance_km"])
+        return results
+
     except Exception as e:
         print(f"Warning: Pipeline query failed: {e}")
         return []
 
 
-def query_substations(lat: float, lon: float, radius_km: float) -> List[Dict[str, Any]]:
+# ============================================================
+# Transmission Lines — HIFLD Electric Power Transmission Lines
+# ============================================================
+
+def query_transmission_lines(lat: float, lon: float, radius_km: float,
+                             min_voltage_kv: int = 69) -> List[Dict[str, Any]]:
     """
-    Query HIFLD ArcGIS REST API for electric substations within radius
-    Returns list of substation features with distance calculations
+    Query HIFLD for electric power transmission lines near a point.
+
+    Note: HIFLD substations endpoint no longer available (2026).
+    Using transmission lines as the best available proxy for grid access points.
     """
     ensure_cache_dir()
-    
-    # Create spatial filter
-    geometry = {
-        "x": lon,
-        "y": lat,
-        "spatialReference": {"wkid": 4326}
-    }
-    
-    # ArcGIS REST API endpoint for Electric Substations
-    url = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query"
-    
+
+    # Convert to Web Mercator for spatial query
+    x = lon * 20037508.34 / 180
+    y_rad = math.log(math.tan((90 + lat) * math.pi / 360)) / (math.pi / 180)
+    y = y_rad * 20037508.34 / 180
+    buf = radius_km * 1000  # meters
+
     params = {
-        'f': 'json',
-        'geometry': json.dumps(geometry),
-        'geometryType': 'esriGeometryPoint',
-        'inSR': 4326,
-        'spatialRel': 'esriSpatialRelIntersects',
-        'distance': radius_km,
-        'units': 'esriSRUnit_Kilometer',
-        'outFields': '*',
-        'returnGeometry': True,
-        'where': "STATE = 'TX' AND MAX_VOLT >= 69"
+        "f": "json",
+        "geometry": f"{x - buf},{y - buf},{x + buf},{y + buf}",
+        "geometryType": "esriGeometryEnvelope",
+        "inSR": "3857",
+        "outSR": "4326",
+        "spatialRel": "esriSpatialRelIntersects",
+        "outFields": "OWNER,VOLTAGE,VOLT_CLASS,STATUS",
+        "returnGeometry": "true",
+        "resultRecordCount": 100,
     }
-    
+
     try:
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        
-        substations = []
-        
-        if 'features' in data:
-            for feature in data['features']:
-                attrs = feature['attributes']
-                geom = feature['geometry']
-                
-                if geom and 'x' in geom and 'y' in geom:
-                    sub_lat, sub_lon = geom['y'], geom['x']
-                    distance_km = haversine_distance(lat, lon, sub_lat, sub_lon)
-                    direction = compass_direction(lat, lon, sub_lat, sub_lon)
-                    
-                    substation = {
-                        'name': attrs.get('SUB_NAME', 'Unknown Substation'),
-                        'voltage_kv': attrs.get('MAX_VOLT', 0),
-                        'status': attrs.get('STATUS', 'Unknown'),
-                        'distance_km': round(distance_km, 1),
-                        'distance_mi': round(km_to_miles(distance_km), 1),
-                        'lat': sub_lat,
-                        'lon': sub_lon,
-                        'direction': direction
-                    }
-                    substations.append(substation)
-        
-        # Sort by distance and return
-        substations.sort(key=lambda x: x['distance_km'])
-        return substations
-        
+        resp = requests.get(TRANSMISSION_URL, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("error"):
+            print(f"Warning: Transmission API error: {data['error'].get('message')}")
+            return []
+
+        results = []
+        seen = set()
+
+        for feat in data.get("features", []):
+            attrs = feat["attributes"]
+            geom = feat.get("geometry", {})
+            paths = geom.get("paths", [])
+            if not paths:
+                continue
+
+            voltage = attrs.get("VOLTAGE", 0)
+            try:
+                voltage = int(str(voltage).replace("kV", "").strip())
+            except (ValueError, TypeError):
+                voltage = 0
+            if voltage < min_voltage_kv:
+                continue
+
+            dist, nearest = _nearest_on_paths(lat, lon, paths)
+            if nearest is None:
+                continue
+
+            owner = attrs.get("OWNER", "Unknown")
+            dedup_key = f"{owner}_{voltage}_{round(dist, 0)}"
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+            nlat, nlon = nearest
+            results.append({
+                "owner": owner,
+                "voltage_kv": voltage,
+                "volt_class": attrs.get("VOLT_CLASS", ""),
+                "status": attrs.get("STATUS", "Unknown"),
+                "distance_km": round(dist, 1),
+                "distance_mi": round(km_to_miles(dist), 1),
+                "nearest_point_lat": round(nlat, 6),
+                "nearest_point_lon": round(nlon, 6),
+                "direction": compass_direction(lat, lon, nlat, nlon),
+                "google_maps_link": _google_maps_link(nlat, nlon),
+                "data_source": "HIFLD Electric Power Transmission Lines (ArcGIS FeatureServer)",
+            })
+
+        results.sort(key=lambda x: x["distance_km"])
+        return results
+
     except Exception as e:
-        print(f"Warning: Substation query failed: {e}")
+        print(f"Warning: Transmission query failed: {e}")
         return []
 
 
+# ============================================================
+# Fiber / Broadband — FCC
+# ============================================================
+
 def query_fiber(lat: float, lon: float) -> Dict[str, Any]:
     """
-    Query FCC Broadband Map for fiber availability at coordinates
-    Returns fiber availability information
+    Return FCC broadband info. Direct API is unstable (405 errors as of Feb 2026).
+    Returns a manual verification link instead.
     """
-    # FCC Broadband Map API
-    url = "https://broadbandmap.fcc.gov/api/public/map/listAvailabilities"
-    
-    params = {
-        'latitude': lat,
-        'longitude': lon
+    viewer_url = FCC_BROADBAND_VIEWER.format(lat=lat, lon=lon)
+    return {
+        "has_fiber": None,  # Cannot determine programmatically
+        "providers": [],
+        "max_download_mbps": 0,
+        "max_upload_mbps": 0,
+        "technology_types": [],
+        "manual_check_url": viewer_url,
+        "data_source": "FCC Broadband Map",
+        "note": "FCC API不稳定，请手动验证: " + viewer_url,
     }
-    
-    try:
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        
-        fiber_info = {
-            'has_fiber': False,
-            'providers': [],
-            'max_download_mbps': 0,
-            'max_upload_mbps': 0,
-            'technology_types': []
-        }
-        
-        if 'results' in data:
-            technologies = set()
-            providers = set()
-            max_down = 0
-            max_up = 0
-            has_fiber = False
-            
-            for result in data['results']:
-                tech = result.get('technology', '').lower()
-                provider = result.get('provider_name', '')
-                down_speed = result.get('max_advertised_download_speed', 0)
-                up_speed = result.get('max_advertised_upload_speed', 0)
-                
-                if 'fiber' in tech or tech in ['50', '70']:  # FCC tech codes for fiber
-                    has_fiber = True
-                
-                technologies.add(tech)
-                if provider:
-                    providers.add(provider)
-                
-                max_down = max(max_down, down_speed or 0)
-                max_up = max(max_up, up_speed or 0)
-            
-            fiber_info.update({
-                'has_fiber': has_fiber,
-                'providers': list(providers),
-                'max_download_mbps': max_down,
-                'max_upload_mbps': max_up,
-                'technology_types': list(technologies)
-            })
-        
-        return fiber_info
-        
-    except Exception as e:
-        print(f"Warning: Fiber query failed: {e}")
-        return {
-            'has_fiber': False,
-            'providers': [],
-            'max_download_mbps': 0,
-            'max_upload_mbps': 0,
-            'technology_types': [],
-            'error': str(e)
-        }
