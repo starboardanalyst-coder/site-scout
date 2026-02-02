@@ -26,6 +26,7 @@ def format_markdown(results: Dict[str, Any]) -> str:
 
     a(f"📍 Site Scout Report — ({lat:.4f}, {lon:.4f})")
     a(f"Generated: {time_str}")
+    a(f"🗺️ Google Maps: https://www.google.com/maps?q={lat},{lon}")
     a("")
 
     # ---- Pipelines ----
@@ -45,6 +46,9 @@ def format_markdown(results: Dict[str, Any]) -> str:
             if nlat and nlon:
                 a(f"      📍 Nearest: ({nlat}, {nlon})")
                 a(f"      🗺️ {p.get('google_maps_link', '')}")
+            eia_url = p.get("eia_record_url")
+            if eia_url:
+                a(f"      🔗 EIA Record: {eia_url}")
             a(f"      📊 Source: {p.get('data_source', 'EIA')}")
             a("")
     else:
@@ -67,6 +71,9 @@ def format_markdown(results: Dict[str, Any]) -> str:
             if nlat and nlon:
                 a(f"      📍 Nearest: ({nlat}, {nlon})")
                 a(f"      🗺️ {t.get('google_maps_link', '')}")
+            hifld_url = t.get("hifld_record_url")
+            if hifld_url:
+                a(f"      🔗 HIFLD Record: {hifld_url}")
             a(f"      📊 Source: {t.get('data_source', 'HIFLD')}")
             a("")
     else:
@@ -94,6 +101,9 @@ def format_markdown(results: Dict[str, Any]) -> str:
             if slat and slon:
                 a(f"      📍 ({slat}, {slon})")
                 a(f"      🗺️ {s.get('google_maps_link', '')}")
+            hifld_url = s.get("hifld_record_url")
+            if hifld_url:
+                a(f"      🔗 HIFLD Record: {hifld_url}")
             a(f"      📊 Source: {s.get('data_source', 'HIFLD')}")
             a("")
     else:
@@ -194,6 +204,18 @@ def format_markdown(results: Dict[str, Any]) -> str:
     a("  📊 Source: EPA Green Book")
     if att.get("error"):
         a(f"  ⚠️ {att['error']}")
+    a("")
+
+    # ---- Data Sources Reference ----
+    a("═══ 📚 DATA SOURCES (手动查询入口) ═══")
+    a("")
+    a(f"  管道: https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0")
+    a(f"  输电线: https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0")
+    a(f"  变电站: https://services6.arcgis.com/OO2s4OoyCZkYJ6oE/arcgis/rest/services/Substations/FeatureServer/0")
+    a(f"  变电站地图: https://www.arcgis.com/apps/mapviewer/index.html?url=https://services6.arcgis.com/OO2s4OoyCZkYJ6oE/arcgis/rest/services/Substations/FeatureServer/0&center={lon},{lat}&level=10")
+    a(f"  光纤(FCC BDC): https://services8.arcgis.com/peDZJliSvYims39Q/arcgis/rest/services/FCC_Broadband_Data_Collection_December_2024_View/FeatureServer")
+    a(f"  City Limits: https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Places_CouSub_ConCity_SubMCD/MapServer/4")
+    a(f"  EPA Green Book: https://www.epa.gov/green-book")
 
     return "\n".join(out)
 

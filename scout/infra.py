@@ -119,7 +119,7 @@ def query_pipelines(lat: float, lon: float, radius_km: float,
         "spatialRel": "esriSpatialRelIntersects",
         "distance": radius_km,
         "units": "esriSRUnit_Kilometer",
-        "outFields": "Operator,TYPEPIPE,Status",
+        "outFields": "FID,Operator,TYPEPIPE,Status",
         "returnGeometry": "true",
         "outSR": "4326",
         "resultRecordCount": 100,
@@ -164,6 +164,12 @@ def query_pipelines(lat: float, lon: float, radius_km: float,
 
             is_target = any(t in operator.lower() for t in target_ops) if target_ops else False
             nlat, nlon = nearest
+            fid = attrs.get("FID")
+            eia_url = (
+                f"https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
+                f"Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0/"
+                f"query?where=FID={fid}&outFields=*&f=html"
+            ) if fid else None
 
             results.append({
                 "operator": operator,
@@ -176,6 +182,7 @@ def query_pipelines(lat: float, lon: float, radius_km: float,
                 "direction": compass_direction(lat, lon, nlat, nlon),
                 "is_target_operator": is_target,
                 "google_maps_link": _google_maps_link(nlat, nlon),
+                "eia_record_url": eia_url,
                 "data_source": "EIA Natural Gas Interstate & Intrastate Pipelines (ArcGIS FeatureServer)",
             })
 
@@ -214,7 +221,7 @@ def query_transmission_lines(lat: float, lon: float, radius_km: float,
         "inSR": "3857",
         "outSR": "4326",
         "spatialRel": "esriSpatialRelIntersects",
-        "outFields": "OWNER,VOLTAGE,VOLT_CLASS,STATUS",
+        "outFields": "OBJECTID_1,OWNER,VOLTAGE,VOLT_CLASS,STATUS",
         "returnGeometry": "true",
         "resultRecordCount": 100,
     }
@@ -257,6 +264,13 @@ def query_transmission_lines(lat: float, lon: float, radius_km: float,
             seen.add(dedup_key)
 
             nlat, nlon = nearest
+            oid = attrs.get("OBJECTID_1")
+            hifld_url = (
+                f"https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/"
+                f"Electric_Power_Transmission_Lines/FeatureServer/0/"
+                f"query?where=OBJECTID_1={oid}&outFields=*&f=html"
+            ) if oid else None
+
             results.append({
                 "owner": owner,
                 "voltage_kv": voltage,
@@ -268,6 +282,7 @@ def query_transmission_lines(lat: float, lon: float, radius_km: float,
                 "nearest_point_lon": round(nlon, 6),
                 "direction": compass_direction(lat, lon, nlat, nlon),
                 "google_maps_link": _google_maps_link(nlat, nlon),
+                "hifld_record_url": hifld_url,
                 "data_source": "HIFLD Electric Power Transmission Lines (ArcGIS FeatureServer)",
             })
 
@@ -422,7 +437,7 @@ def query_substations(lat: float, lon: float, radius_km: float) -> List[Dict[str
         "distance": radius_km,
         "units": "esriSRUnit_Kilometer",
         "where": "1=1",
-        "outFields": "NAME,CITY,STATE,TYPE,STATUS,COUNTY,LATITUDE,LONGITUDE,LINES",
+        "outFields": "OBJECTID,ID,NAME,CITY,STATE,TYPE,STATUS,COUNTY,LATITUDE,LONGITUDE,LINES,SOURCE,SOURCEDATE",
         "returnGeometry": "true",
         "outSR": "4326",
         "resultRecordCount": 30,
@@ -450,6 +465,11 @@ def query_substations(lat: float, lon: float, radius_km: float) -> List[Dict[str
 
             dist = haversine_distance(lat, lon, slat, slon)
             name = attrs.get("NAME", "Unknown")
+            oid = attrs.get("OBJECTID")
+            hifld_url = (
+                f"https://services6.arcgis.com/OO2s4OoyCZkYJ6oE/arcgis/rest/services/"
+                f"Substations/FeatureServer/0/query?where=OBJECTID={oid}&outFields=*&f=html"
+            ) if oid else None
             results.append({
                 "name": name,
                 "type": attrs.get("TYPE", "Unknown"),
@@ -458,12 +478,15 @@ def query_substations(lat: float, lon: float, radius_km: float) -> List[Dict[str
                 "city": attrs.get("CITY", ""),
                 "county": attrs.get("COUNTY", ""),
                 "state": attrs.get("STATE", ""),
+                "source": attrs.get("SOURCE", ""),
+                "source_date": attrs.get("SOURCEDATE", ""),
                 "distance_km": round(dist, 1),
                 "distance_mi": round(km_to_miles(dist), 1),
                 "lat": round(slat, 6),
                 "lon": round(slon, 6),
                 "direction": compass_direction(lat, lon, slat, slon),
                 "google_maps_link": _google_maps_link(slat, slon),
+                "hifld_record_url": hifld_url,
                 "data_source": "HIFLD Electric Substations (ArcGIS, Jan 2025)",
             })
 
